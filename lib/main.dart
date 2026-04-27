@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:intl/intl.dart';
@@ -5048,6 +5049,404 @@ class _ProgramManagementScreenState extends State<ProgramManagementScreen> {
     _customPrograms = Map.from(widget.customPrograms);
   }
 
+  static const String _programsSchemaTemplate = '''
+{
+  "Program Name": {
+    "Day 1: Upper A": [
+      "Bench Press",
+      "Incline DB Press",
+      "Pull-ups"
+    ],
+    "Day 2: Lower A": [
+      "Squat",
+      "RDL"
+    ]
+  }
+}
+''';
+
+  String _prettyJson(Object? value) {
+    const encoder = JsonEncoder.withIndent('  ');
+    return encoder.convert(value);
+  }
+
+  Map<String, Map<String, List<String>>> _parseProgramsJson(dynamic decoded) {
+    if (decoded is! Map) {
+      throw const FormatException(
+        "Top-level JSON must be an object: { \"Program Name\": { ... } }",
+      );
+    }
+
+    final result = <String, Map<String, List<String>>>{};
+
+    for (final entry in decoded.entries) {
+      final programName = entry.key;
+      final programValue = entry.value;
+
+      if (programName is! String || programName.trim().isEmpty) {
+        throw const FormatException("Program names must be non-empty strings.");
+      }
+      if (programValue is! Map) {
+        throw FormatException(
+          "Program '$programName' must be an object mapping day names to exercise arrays.",
+        );
+      }
+
+      final days = <String, List<String>>{};
+      for (final dayEntry in programValue.entries) {
+        final dayName = dayEntry.key;
+        final dayValue = dayEntry.value;
+
+        if (dayName is! String || dayName.trim().isEmpty) {
+          throw FormatException(
+            "Program '$programName' contains a day name that isn't a non-empty string.",
+          );
+        }
+        if (dayValue is! List) {
+          throw FormatException(
+            "Program '$programName' day '$dayName' must be an array of exercise names.",
+          );
+        }
+
+        final exercises = <String>[];
+        for (final item in dayValue) {
+          if (item is! String) {
+            throw FormatException(
+              "Program '$programName' day '$dayName' contains a non-string exercise name.",
+            );
+          }
+          final trimmed = item.trim();
+          if (trimmed.isNotEmpty) {
+            exercises.add(trimmed);
+          }
+        }
+
+        if (exercises.isNotEmpty) {
+          days[dayName.trim()] = exercises;
+        }
+      }
+
+      if (days.isNotEmpty) {
+        result[programName.trim()] = days;
+      }
+    }
+
+    if (result.isEmpty) {
+      throw const FormatException(
+        "No valid programs found. Check names, days, and exercise arrays.",
+      );
+    }
+
+    return result;
+  }
+
+  Future<void> _importProgramsFromJsonText(
+    String jsonText, {
+    required bool replaceExisting,
+  }) async {
+    try {
+      final decoded = jsonDecode(jsonText);
+      final imported = _parseProgramsJson(decoded);
+
+      setState(() {
+        if (replaceExisting) {
+          _customPrograms = imported;
+        } else {
+          _customPrograms = {..._customPrograms, ...imported};
+        }
+      });
+
+      widget.onProgramsUpdated(_customPrograms);
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            replaceExisting
+                ? "Imported programs (replaced existing)."
+                : "Imported programs (merged).",
+          ),
+        ),
+      );
+    } on FormatException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Invalid schema: ${e.message}")),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Failed to import JSON: $e")),
+      );
+    }
+  }
+
+  Future<void> _showProgramsImportDialog({String? initialJson}) async {
+    final controller = TextEditingController(text: initialJson ?? '');
+    bool replaceExisting = false;
+
+    await showDialog(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setLocalState) {
+            return AlertDialog(
+              backgroundColor: const Color(0xFF1E293B),
+              title: const Text(
+                "Import Programs JSON",
+                style: TextStyle(color: Colors.white),
+              ),
+              content: SizedBox(
+                width: 560,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      "Paste JSON matching the schema below. You can merge with existing programs or replace them.",
+                      style: TextStyle(color: Colors.grey.shade300, fontSize: 12),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: controller,
+                      minLines: 6,
+                      maxLines: 12,
+                      style: const TextStyle(color: Colors.white, fontSize: 12),
+                      decoration: InputDecoration(
+                        hintText: _programsSchemaTemplate,
+                        hintStyle: TextStyle(
+                          color: Colors.grey.shade600,
+                          fontSize: 11,
+                        ),
+                        filled: true,
+                        fillColor: const Color(0xFF0F172A),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide: BorderSide(color: Colors.grey.shade700),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide: BorderSide(color: Colors.grey.shade700),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide: const BorderSide(color: Color(0xFF3B82F6)),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    CheckboxListTile(
+                      value: replaceExisting,
+                      onChanged: (v) => setLocalState(() {
+                        replaceExisting = v ?? false;
+                      }),
+                      dense: true,
+                      controlAffinity: ListTileControlAffinity.leading,
+                      title: const Text(
+                        "Replace existing custom programs",
+                        style: TextStyle(color: Colors.white),
+                      ),
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text("Cancel"),
+                ),
+                ElevatedButton.icon(
+                  onPressed: () async {
+                    final text = controller.text.trim();
+                    if (text.isEmpty) return;
+                    Navigator.pop(ctx);
+                    await _importProgramsFromJsonText(
+                      text,
+                      replaceExisting: replaceExisting,
+                    );
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF3B82F6),
+                    foregroundColor: Colors.white,
+                  ),
+                  icon: const Icon(Icons.upload_file),
+                  label: const Text("Import"),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _showProgramsSchemaDialog() async {
+    await showDialog(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1E293B),
+          title: const Text(
+            "Programs JSON Schema (template)",
+            style: TextStyle(color: Colors.white),
+          ),
+          content: SizedBox(
+            width: 560,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  "Copy/paste this as a starting point.",
+                  style: TextStyle(color: Colors.grey.shade300, fontSize: 12),
+                ),
+                const SizedBox(height: 12),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF0F172A),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.grey.shade700),
+                  ),
+                  child: SelectableText(
+                    _programsSchemaTemplate.trim(),
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () async {
+                final messenger = ScaffoldMessenger.of(context);
+                await Clipboard.setData(
+                  ClipboardData(text: _programsSchemaTemplate.trim()),
+                );
+                if (!mounted) return;
+                messenger.showSnackBar(
+                  const SnackBar(content: Text("Schema copied to clipboard.")),
+                );
+              },
+              child: const Text("Copy"),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF3B82F6),
+                foregroundColor: Colors.white,
+              ),
+              child: const Text("Close"),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _importProgramsFromFile() async {
+    try {
+      final res = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const ['json'],
+        withData: true,
+      );
+      if (res == null || res.files.isEmpty) return;
+
+      final file = res.files.first;
+      String text = '';
+      if (file.bytes != null) {
+        text = utf8.decode(file.bytes!);
+      } else if (file.path != null) {
+        text = await File(file.path!).readAsString();
+      }
+
+      if (!mounted) return;
+      await _showProgramsImportDialog(initialJson: text);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Failed to read file: $e")),
+      );
+    }
+  }
+
+  void _showProgramsImportMenu() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1E293B),
+      builder: (ctx) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.description, color: Colors.white),
+                title: const Text(
+                  "View schema template",
+                  style: TextStyle(color: Colors.white),
+                ),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _showProgramsSchemaDialog();
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.upload_file, color: Colors.white),
+                title: const Text(
+                  "Upload JSON file",
+                  style: TextStyle(color: Colors.white),
+                ),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _importProgramsFromFile();
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.content_paste, color: Colors.white),
+                title: const Text(
+                  "Paste JSON",
+                  style: TextStyle(color: Colors.white),
+                ),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _showProgramsImportDialog();
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.download, color: Colors.white),
+                title: const Text(
+                  "Copy current custom programs as JSON",
+                  style: TextStyle(color: Colors.white),
+                ),
+                subtitle: Text(
+                  "Useful for exporting + re-importing later",
+                  style: TextStyle(color: Colors.grey.shade400, fontSize: 12),
+                ),
+                onTap: () async {
+                  final jsonText = _prettyJson(_customPrograms);
+                  await Clipboard.setData(ClipboardData(text: jsonText));
+                  if (!ctx.mounted) return;
+                  Navigator.pop(ctx);
+                  if (!mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text("Export copied to clipboard.")),
+                  );
+                },
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   void _addProgram() {
     Navigator.push(
       context,
@@ -5131,6 +5530,13 @@ class _ProgramManagementScreenState extends State<ProgramManagementScreen> {
       appBar: AppBar(
         title: const Text("Manage Programs"),
         backgroundColor: const Color(0xFF1E293B),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.import_export),
+            tooltip: "Import / Export",
+            onPressed: _showProgramsImportMenu,
+          ),
+        ],
       ),
       backgroundColor: const Color(0xFF0F172A),
       body:
@@ -5254,6 +5660,8 @@ class _ProgramEditorScreenState extends State<ProgramEditorScreen> {
   late Map<String, List<String>> _programData;
   final Map<String, TextEditingController> _dayNameControllers = {};
   final Map<String, Map<int, TextEditingController>> _exerciseControllers = {};
+  final Map<String, Map<int, TextEditingController>> _exerciseTargetControllers =
+      {};
 
   @override
   void initState() {
@@ -5271,10 +5679,12 @@ class _ProgramEditorScreenState extends State<ProgramEditorScreen> {
     _programData.forEach((dayName, exercises) {
       _dayNameControllers[dayName] = TextEditingController(text: dayName);
       _exerciseControllers[dayName] = {};
+      _exerciseTargetControllers[dayName] = {};
       for (int i = 0; i < exercises.length; i++) {
         _exerciseControllers[dayName]![i] = TextEditingController(
           text: exercises[i],
         );
+        _exerciseTargetControllers[dayName]![i] = TextEditingController();
       }
     });
   }
@@ -5285,6 +5695,7 @@ class _ProgramEditorScreenState extends State<ProgramEditorScreen> {
       _programData[dayName] = [''];
       _dayNameControllers[dayName] = TextEditingController(text: dayName);
       _exerciseControllers[dayName] = {0: TextEditingController(text: '')};
+      _exerciseTargetControllers[dayName] = {0: TextEditingController(text: '')};
     });
   }
 
@@ -5293,8 +5704,10 @@ class _ProgramEditorScreenState extends State<ProgramEditorScreen> {
       _programData.remove(dayName);
       _dayNameControllers[dayName]?.dispose();
       _exerciseControllers[dayName]?.values.forEach((c) => c.dispose());
+      _exerciseTargetControllers[dayName]?.values.forEach((c) => c.dispose());
       _dayNameControllers.remove(dayName);
       _exerciseControllers.remove(dayName);
+      _exerciseTargetControllers.remove(dayName);
     });
   }
 
@@ -5307,6 +5720,11 @@ class _ProgramEditorScreenState extends State<ProgramEditorScreen> {
         _exerciseControllers[dayName] = {};
       }
       _exerciseControllers[dayName]![newIndex] = TextEditingController();
+
+      if (_exerciseTargetControllers[dayName] == null) {
+        _exerciseTargetControllers[dayName] = {};
+      }
+      _exerciseTargetControllers[dayName]![newIndex] = TextEditingController();
     });
   }
 
@@ -5314,6 +5732,7 @@ class _ProgramEditorScreenState extends State<ProgramEditorScreen> {
     setState(() {
       // Dispose all controllers for this day
       _exerciseControllers[dayName]?.values.forEach((c) => c.dispose());
+      _exerciseTargetControllers[dayName]?.values.forEach((c) => c.dispose());
 
       // Remove exercise from data
       _programData[dayName]!.removeAt(index);
@@ -5321,10 +5740,13 @@ class _ProgramEditorScreenState extends State<ProgramEditorScreen> {
       // Rebuild controllers from remaining exercises
       final exercises = _programData[dayName]!;
       final newControllers = <int, TextEditingController>{};
+      final newTargetControllers = <int, TextEditingController>{};
       for (int i = 0; i < exercises.length; i++) {
         newControllers[i] = TextEditingController(text: exercises[i]);
+        newTargetControllers[i] = TextEditingController();
       }
       _exerciseControllers[dayName] = newControllers;
+      _exerciseTargetControllers[dayName] = newTargetControllers;
     });
   }
 
@@ -5386,6 +5808,11 @@ class _ProgramEditorScreenState extends State<ProgramEditorScreen> {
       c.dispose();
     }
     for (final map in _exerciseControllers.values) {
+      for (final c in map.values) {
+        c.dispose();
+      }
+    }
+    for (final map in _exerciseTargetControllers.values) {
       for (final c in map.values) {
         c.dispose();
       }
@@ -5462,6 +5889,7 @@ class _ProgramEditorScreenState extends State<ProgramEditorScreen> {
     final dayController = _dayNameControllers[dayName]!;
     final exercises = _programData[dayName]!;
     final exerciseMap = _exerciseControllers[dayName] ?? {};
+    final targetMap = _exerciseTargetControllers[dayName] ?? {};
 
     return Card(
       color: const Color(0xFF1E293B),
@@ -5516,34 +5944,83 @@ class _ProgramEditorScreenState extends State<ProgramEditorScreen> {
                 );
               }
               final controller = exerciseMap[index]!;
+
+              if (targetMap[index] == null) {
+                targetMap[index] = TextEditingController();
+              }
+              final targetController = targetMap[index]!;
               return Padding(
                 padding: const EdgeInsets.only(bottom: 8),
                 child: Row(
                   children: [
                     Expanded(
-                      child: TextField(
-                        controller: controller,
-                        style: const TextStyle(color: Colors.white),
-                        decoration: InputDecoration(
-                          hintText: "Exercise ${index + 1}",
-                          hintStyle: TextStyle(color: Colors.grey.shade500),
-                          filled: true,
-                          fillColor: const Color(0xFF0F172A),
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(8),
-                            borderSide: BorderSide(color: Colors.grey.shade700),
-                          ),
-                          enabledBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(8),
-                            borderSide: BorderSide(color: Colors.grey.shade700),
-                          ),
-                          focusedBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(8),
-                            borderSide: const BorderSide(
-                              color: Color(0xFF3B82F6),
+                      child: Column(
+                        children: [
+                          TextField(
+                            controller: controller,
+                            style: const TextStyle(color: Colors.white),
+                            decoration: InputDecoration(
+                              hintText: "Exercise ${index + 1}",
+                              hintStyle: TextStyle(color: Colors.grey.shade500),
+                              filled: true,
+                              fillColor: const Color(0xFF0F172A),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(8),
+                                borderSide: BorderSide(
+                                  color: Colors.grey.shade700,
+                                ),
+                              ),
+                              enabledBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(8),
+                                borderSide: BorderSide(
+                                  color: Colors.grey.shade700,
+                                ),
+                              ),
+                              focusedBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(8),
+                                borderSide: const BorderSide(
+                                  color: Color(0xFF3B82F6),
+                                ),
+                              ),
                             ),
                           ),
-                        ),
+                          const SizedBox(height: 6),
+                          TextField(
+                            controller: targetController,
+                            style: const TextStyle(color: Colors.white),
+                            decoration: InputDecoration(
+                              hintText: "Target (optional): e.g. 10-12, RPE 8, RIR 2",
+                              hintStyle: TextStyle(
+                                color: Colors.grey.shade600,
+                                fontSize: 12,
+                              ),
+                              filled: true,
+                              fillColor: const Color(0xFF0F172A),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(8),
+                                borderSide: BorderSide(
+                                  color: Colors.grey.shade800,
+                                ),
+                              ),
+                              enabledBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(8),
+                                borderSide: BorderSide(
+                                  color: Colors.grey.shade800,
+                                ),
+                              ),
+                              focusedBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(8),
+                                borderSide: const BorderSide(
+                                  color: Color(0xFF3B82F6),
+                                ),
+                              ),
+                              contentPadding: const EdgeInsets.symmetric(
+                                vertical: 10,
+                                horizontal: 12,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                     IconButton(
