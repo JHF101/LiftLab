@@ -189,17 +189,23 @@ class _ExerciseCard extends StatelessWidget {
                 return Padding(
                   padding: const EdgeInsets.only(bottom: 8.0),
                   child: Container(
-                    decoration:
-                        isPR
-                            ? BoxDecoration(
-                              color: Colors.yellow.shade900.withValues(
-                                alpha: 0.3,
-                              ),
-                              borderRadius: BorderRadius.circular(4),
-                              border: Border.all(color: Colors.yellow.shade700),
-                            )
-                            : null,
-                    padding: isPR ? const EdgeInsets.all(4) : EdgeInsets.zero,
+                    // Keep padding/decoration structure stable when isPR toggles so
+                    // layout does not jump and the keyboard/focus are not dropped.
+                    decoration: BoxDecoration(
+                      color:
+                          isPR
+                              ? Colors.yellow.shade900.withValues(alpha: 0.3)
+                              : null,
+                      borderRadius: BorderRadius.circular(4),
+                      border: Border.all(
+                        color:
+                            isPR
+                                ? Colors.yellow.shade700
+                                : Colors.transparent,
+                        width: 1,
+                      ),
+                    ),
+                    padding: const EdgeInsets.all(4),
                     child: Row(
                       children: [
                         SizedBox(
@@ -319,18 +325,22 @@ class _CompactInput extends StatefulWidget {
 
 class _CompactInputState extends State<_CompactInput> {
   late TextEditingController _controller;
+  late FocusNode _focusNode;
 
   @override
   void initState() {
     super.initState();
     _controller = TextEditingController(text: widget.value);
+    _focusNode = FocusNode();
   }
 
   @override
   void didUpdateWidget(covariant _CompactInput oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.value != _controller.text) {
-      _controller.value = _controller.value.copyWith(
+    // While focused, the controller is authoritative — syncing from parent on
+    // every setState would fight the IME and can drop focus on some devices.
+    if (!_focusNode.hasFocus && widget.value != _controller.text) {
+      _controller.value = TextEditingValue(
         text: widget.value,
         selection: TextSelection.collapsed(offset: widget.value.length),
       );
@@ -339,6 +349,7 @@ class _CompactInputState extends State<_CompactInput> {
 
   @override
   void dispose() {
+    _focusNode.dispose();
     _controller.dispose();
     super.dispose();
   }
@@ -347,6 +358,7 @@ class _CompactInputState extends State<_CompactInput> {
   Widget build(BuildContext context) {
     return TextField(
       controller: _controller,
+      focusNode: _focusNode,
       keyboardType: const TextInputType.numberWithOptions(decimal: true),
       onChanged: widget.onChanged,
       textAlign: TextAlign.center,
